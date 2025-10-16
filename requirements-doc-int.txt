@@ -1,0 +1,11 @@
+# Minimal dependencies to run doc-int.py
+# Install with: pip install -r requirements-doc-int.txt
+
+# Azure Document Intelligence client library (for DocumentIntelligenceClient)
+azure-ai-documentintelligence>=1.0.0
+
+# Azure core runtime (for AzureKeyCredential, HttpResponseError)
+azure-core>=1.30.0
+
+# Load credentials from a .env file
+python-dotenv>=1.0.0
