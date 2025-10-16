@@ -1,3 +1,8 @@
+# .gitignore from templates and misc add-ins
+
+##ignore directories (or files) that start with `test-`
+test-*
+
 ### Python template
 # Byte-compiled / optimized / DLL files
 __pycache__/
