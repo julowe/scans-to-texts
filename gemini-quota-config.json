@@ -1,0 +1,34 @@
+{
+  "models": {
+    "gemini-2.5-flash": {
+      "quotas": {
+        "requests_per_day": {
+          "limit": 250,
+          "reset_time": "00:00",
+          "reset_timezone": "America/Los_Angeles"
+        }
+      },
+      "quota_url": "https://ai.dev/usage?tab=rate-limit"
+    },
+    "example-LLM-v0": {
+      "quotas": {
+        "requests_per_day": {
+          "limit": 1000,
+          "reset_time": "16:00",
+          "reset_timezone": "America/New_York"
+        },
+        "requests_per_minute": {
+          "limit": 5
+        },
+        "tokens_per_request": {
+          "limit": 70000
+        },
+        "tokens_per_minute": {
+          "limit": 250000
+        }
+      },
+      "quota_url": "http://quota-page.invalid"
+    }
+  }
+}
+
