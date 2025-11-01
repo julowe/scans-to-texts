@@ -229,13 +229,13 @@ def extract_head(hocr_content: str) -> Optional[Any]:
 
 
 def merge_hocr_files(
-    all_pages: BeautifulSoup, proofread_files: List[Path], source_hocr: Optional[Path], output_path: Path
+    all_pages: List[dict], proofread_files: List[Path], source_hocr: Optional[Path], output_path: Path
 ):
     """
     Merge multiple proofread HOCR files into one multipage HOCR file.
 
     Args:
-        all_pages: BeautifulSoup elements from inside <body> tog of each one-page hOCR file
+        all_pages: List of dicts with page metadata including 'element' (BeautifulSoup element)
         proofread_files: List of proofread HOCR file paths (in order)
         source_hocr: Optional path to the original source HOCR file (for head content)
         output_path: Path where merged HOCR should be saved
@@ -321,9 +321,9 @@ def merge_hocr_files(
 
     # Add all pages to body
     # for page in all_pages:
-    for idx, page in enumerate(all_pages):
+    for idx, page_data in enumerate(all_pages):
         logging.debug(f"Adding page #{idx}")
-        hocr_output.body.append(page)
+        hocr_output.body.append(page_data['element'])
 
     # Write merged HOCR
     logging.debug(f"Writing merged HOCR to: {output_path}")
@@ -655,11 +655,12 @@ def generate_latex_document(
     # TODO make book not article. see how much that messes things up TEST
     # Start LaTeX document
     latex_lines = [
-        r"\documentclass[12pt]{article}",
+        r"\documentclass[11pt]{book}",
         r"\usepackage[utf8]{inputenc}",
-        r"\usepackage[T1]{fontenc}",
+        r"%\usepackage[T1]{fontenc}",
         r"\usepackage{geometry}",
-        r"\geometry{letterpaper, margin=1in}",
+        r"\geometry{A5}",
+        r"%\geometry{letterpaper, margin=1in}",
         r"\usepackage{parskip}",
         r"",
         r"% Logic to optionally enable commands to retain page breaks and/or retain line breaks",
@@ -762,6 +763,9 @@ def generate_latex_document(
                 word_text = word.get_text(strip=True)
                 if not word_text:
                     continue
+
+                # TODO convert characters like quotes and double quotes to appropriate LaTeX equivalents here?
+                # TODO look for weird superscripts like: ⁴ (U+2074)   ⁵ (U+2075)   ⁶ (U+2076)
 
                 # Detect font styling
                 is_bold, is_italic, is_superscript = detect_font_style(word)
@@ -1054,9 +1058,36 @@ def process_batches(
             else:
                 logging.info("No differences found for %s", batch_dir.name)
 
-            # extract <body> content
+            # extract <body> content and create page metadata, handling if more than one page in hOCR file.
             pages = extract_page_elements("".join(proofread_file_lines))
-            all_pages.extend(pages)
+            for page in pages:
+                page_title = page.get('title', '')
+                page_bbox = extract_bbox(page_title)
+
+                # Extract page number
+                page_num = None
+                page_match = re.search(r'ppageno\s+(\d+)', page_title)
+                if page_match:
+                    page_num = page_match.group(1)
+
+                # Extract image filename from HTML comments
+                image_filename = None
+                for comment in page.find_all(string=lambda text: isinstance(text, str) and 'overall page' in text.lower()):
+                    filename_match = re.search(r'image[:\s]+([^\s]+)', str(comment))
+                    if filename_match:
+                        image_filename = filename_match.group(1)
+                        break
+
+                page_data = {
+                    'element': page,
+                    'source_file': proofread_hocr,
+                    'batch_dir': batch_dir,
+                    'bbox': page_bbox,
+                    'title': page_title,
+                    'page_num': page_num,
+                    'image_filename': image_filename,
+                }
+                all_pages.append(page_data)
 
             # TODO extract body of hOCR here and run analysis for later use in tex etc output
         else:
@@ -1091,6 +1122,12 @@ def process_batches(
     if proofread_files:
         merged_output = output_dir / f"{base_filename}-merged.hocr"
         merge_hocr_files(all_pages, proofread_files, source_hocr, merged_output)
+
+        # TODO prob want to invert these output functions.
+        #  each output will need some of it's own per page calculations or processing, so if any of these outputs
+        #  are called for, then loop through list of pages and slowly build up the tex or markdown or whatever
+        #  output file as we go.
+
 
         # Generate LaTeX if requested
         if generate_latex:
