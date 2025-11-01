@@ -92,14 +92,18 @@ def find_hocr_files(batch_dir: Path) -> Tuple[Optional[Path], Optional[Path]]:
 
     for hocr in hocr_files:
         name_lower = hocr.name.lower()
-        if name_lower.endswith(".hocr") and "proofread" not in name_lower and "corrected" not in name_lower:
+        if (
+            name_lower.endswith(".hocr")
+            and "proofread" not in name_lower
+            and "corrected" not in name_lower
+        ):
             if original is None:
                 original = hocr
             elif original.stat().st_mtime > hocr.stat().st_mtime:
                 # only use the oldest matching file as original
                 original = hocr
         elif name_lower.endswith("-corrected.hocr"):
-            #TODO also use or "-edited.hocr"?
+            # TODO also use or "-edited.hocr"?
             if corrected is None:
                 corrected = hocr
             elif corrected.stat().st_mtime < hocr.stat().st_mtime:
@@ -226,111 +230,6 @@ def extract_head(hocr_content: str) -> Optional[Any]:
     """
     soup = BeautifulSoup(hocr_content, "html.parser")
     return soup.find("head")
-
-
-def merge_hocr_files(
-    all_pages: List[dict], proofread_files: List[Path], source_hocr: Optional[Path], output_path: Path
-):
-    """
-    Merge multiple proofread HOCR files into one multipage HOCR file.
-
-    Args:
-        all_pages: List of dicts with page metadata including 'element' (BeautifulSoup element)
-        proofread_files: List of proofread HOCR file paths (in order)
-        source_hocr: Optional path to the original source HOCR file (for head content)
-        output_path: Path where merged HOCR should be saved
-    """
-
-    logging.debug(f"Merging {len(proofread_files)} files into: {output_path}")
-
-    # Get head content from the source file or the first proofread file
-    head_content = None
-
-    # NB: reading x lines is probably safer and less likely to be exceed than using file size
-    # TODO still make not fail tho!
-    # bytes_to_read = (
-    #     750 * 1024
-    # )  # e.g. one ScribeOCR.com output has 219kb of fonts etc in header
-    lines_to_read = 25  # e.g. one ScribeOCR.com output has 15 lines in header
-    if source_hocr and source_hocr.exists():
-        logging.debug(f"Getting head content from source HOCR: {source_hocr}")
-        # very slow bc reading whole file
-        # with open(source_hocr, "r", encoding="utf-8") as f:
-        #     head_content = extract_head(f.read())
-        # with open(source_hocr, "r", encoding="utf-8") as f:
-        #     head_content = extract_head(f.read(bytes_to_read))
-        with open(source_hocr, "r", encoding="utf-8") as f:
-            head_content = extract_head(
-                "".join([next(f) for _ in range(lines_to_read)])
-            )
-
-    if head_content is None and proofread_files:
-        logging.debug(
-            f"Getting head content from first proofread file: {proofread_files[0]}"
-        )
-        with open(proofread_files[0], "r", encoding="utf-8") as f:
-            head_content = extract_head(f.read())
-
-    # Create new HOCR document
-    # soup = BeautifulSoup(
-    #     "<!DOCTYPE html><html><head></head><body></body></html>", "html.parser"
-    # )
-
-    hocr_output = BeautifulSoup(
-        '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"\n    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">\n<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">\n<head>\n  <title></title>\n</head>\n<body></body>\n</html>',
-        "html.parser",
-    )
-
-    # Add head content
-    if head_content:
-        logging.debug("Adding head content to merged HOCR")
-        hocr_output.head.replace_with(head_content)
-    else:
-        # Add basic meta tags
-        logging.debug("No head content found in source HOCR, adding basic meta tags")
-        meta_charset = hocr_output.new_tag("meta", charset="utf-8")
-        meta_generator = hocr_output.new_tag("meta", content="postproofread.py")
-        meta_generator["name"] = "ocr-system"
-        hocr_output.head.append(meta_charset)
-        hocr_output.head.append(meta_generator)
-
-    # Collect all page elements from proofread files
-    # all_pages = []
-
-    # # Use tqdm over batches when available
-    # iterator = (
-    #     tqdm(proofread_files, desc="Generating merged hOCR file", unit="file")
-    #     if tqdm
-    #     else proofread_files
-    # )
-    #
-    # # for proofread_file in proofread_files:
-    # for proofread_file in iterator:
-    #     logging.debug(f"Reading in: {proofread_file}")
-    #     with open(proofread_file, "r", encoding="utf-8") as f:
-    #         content = f.read()
-    #         pages = extract_page_elements(content)
-    #         all_pages.extend(pages)
-    #
-    # # Close iterator if it is a tqdm instance
-    # try:
-    #     if tqdm and hasattr(iterator, "close"):
-    #         iterator.close()
-    # except Exception:
-    #     pass
-
-    # Add all pages to body
-    # for page in all_pages:
-    for idx, page_data in enumerate(all_pages):
-        logging.debug(f"Adding page #{idx}")
-        hocr_output.body.append(page_data['element'])
-
-    # Write merged HOCR
-    logging.debug(f"Writing merged HOCR to: {output_path}")
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(hocr_output.prettify())
-
-    logging.info("✓ Merged %d pages into: %s", len(all_pages), output_path)
 
 
 def extract_bbox(title_attr: str) -> Optional[Tuple[int, int, int, int]]:
@@ -632,6 +531,142 @@ def format_markdown_text(
     return formatted
 
 
+def generate_markdown_document(
+    merged_hocr_path: Path, output_path: Path, preserve_formatting: bool = False
+):
+    """
+    Generate a Markdown document from merged HOCR file.
+
+    Args:
+        merged_hocr_path: Path to merged HOCR file
+        output_path: Path where Markdown file should be saved
+        preserve_formatting: Whether to preserve font formatting (bold, italic, etc.)
+    """
+    with open(merged_hocr_path, "r", encoding="utf-8") as f:
+        soup = BeautifulSoup(f.read(), "html.parser")
+
+    markdown_lines = []
+
+    # Process each page
+    pages = soup.find_all("div", class_="ocr_page")
+
+    for page_idx, page in enumerate(pages):
+        if page_idx > 0:
+            markdown_lines.append("")  # Blank line between pages
+
+        # Extract page information
+        page_title = page.get("title", "")
+        page_bbox = extract_bbox(page_title)
+
+        # Look for page number
+        page_num = None
+        page_match = re.search(r"ppageno\s+(\d+)", page_title)
+        if page_match:
+            page_num = page_match.group(1)
+
+        # Look for image filename in HTML comments
+        image_filename = None
+        for comment in page.find_all(
+            string=lambda text: isinstance(text, str) and "overall page" in text.lower()
+        ):
+            # Extract filename from comment like "<!-- overall page#1 image: 0123.jpg -->"
+            filename_match = re.search(r"image[:\s]+([^\s]+)", str(comment))
+            if filename_match:
+                image_filename = filename_match.group(1)
+                break
+
+        # Create page header
+        page_header = f"### Page {page_num}" if page_num else "### Page"
+        if image_filename:
+            page_header += f" ({image_filename})"
+        markdown_lines.append(page_header)
+        markdown_lines.append("")
+
+        # Get all lines with bboxes for mode calculation
+        all_lines = page.find_all("span", class_="ocr_line")
+        lines_with_bbox = []
+        for line in all_lines:
+            line_bbox = extract_bbox(line.get("title", ""))
+            if line_bbox:
+                lines_with_bbox.append((line, line_bbox))
+
+        # Calculate mode x-position for indent detection
+        mode_x = calculate_mode_x_position(lines_with_bbox)
+        indent_threshold = 20  # pixels
+
+        # Track previous lines for chapter detection and paragraph spacing
+        prev_line_bbox = None
+        prev_line_text = ""
+        blank_lines_count = 0
+
+        for line_idx, (line, line_bbox) in enumerate(lines_with_bbox):
+            line_text = line.get_text(strip=True)
+            if not line_text:
+                blank_lines_count += 1
+                continue
+
+            # Check for centered, all-caps text (potential chapter heading)
+            is_chapter = False
+            if (
+                page_bbox
+                and is_centered_text(line_bbox, page_bbox)
+                and is_all_caps(line_text)
+            ):
+                # Check if there were multiple blank lines before (or it's near start of page)
+                if blank_lines_count > 1 or line_idx < 2:
+                    is_chapter = True
+                    markdown_lines.append(f"## {line_text}")
+                    markdown_lines.append("")
+                    prev_line_bbox = line_bbox
+                    prev_line_text = line_text
+                    blank_lines_count = 0
+                    continue
+
+            # Check for indent (new paragraph)
+            is_indented = abs(line_bbox[0] - mode_x) > indent_threshold
+
+            # Check for large vertical gap (also indicates new paragraph)
+            large_gap = False
+            if prev_line_bbox:
+                prev_height = prev_line_bbox[3] - prev_line_bbox[1]
+                vertical_gap = line_bbox[1] - prev_line_bbox[3]
+                large_gap = vertical_gap > (prev_height * 1.5)
+
+            # Start new paragraph if indented or large gap
+            if (is_indented or large_gap) and prev_line_bbox is not None:
+                markdown_lines.append("")  # Blank line for new paragraph
+
+            # Process words in line
+            line_parts = []
+            words = line.find_all("span", class_="ocrx_word")
+
+            for word in words:
+                word_text = word.get_text(strip=True)
+                if not word_text:
+                    continue
+
+                # Detect font styling
+                is_bold, is_italic, is_superscript = detect_font_style(word)
+
+                formatted_word = format_markdown_text(
+                    word_text, is_bold, is_italic, is_superscript, preserve_formatting
+                )
+                line_parts.append(formatted_word)
+
+            if line_parts:
+                markdown_lines.append(" ".join(line_parts))
+
+            prev_line_bbox = line_bbox
+            prev_line_text = line_text
+            blank_lines_count = 0
+
+    # Write Markdown file
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(markdown_lines))
+
+    logging.info("✓ Generated Markdown document: %s", output_path)
+
+
 def generate_latex_document(
     merged_hocr_path: Path, output_path: Path, enable_page_breaks: bool = False
 ):
@@ -655,11 +690,12 @@ def generate_latex_document(
     # TODO make book not article. see how much that messes things up TEST
     # Start LaTeX document
     latex_lines = [
-        r"\documentclass[11pt]{book}",
+        r"\documentclass[10pt]{book}",
         r"\usepackage[utf8]{inputenc}",
         r"%\usepackage[T1]{fontenc}",
         r"\usepackage{geometry}",
-        r"\geometry{A5}",
+        r"%\geometry{a5paper}",
+        r"\geometry{letterpaper}",
         r"%\geometry{letterpaper, margin=1in}",
         r"\usepackage{parskip}",
         r"",
@@ -810,140 +846,228 @@ def generate_latex_document(
     logging.info("✓ Generated LaTeX document: %s", output_path)
 
 
-def generate_markdown_document(
-    merged_hocr_path: Path, output_path: Path, preserve_formatting: bool = False
+def merge_hocr_files(
+    all_pages: List[dict],
+    proofread_files: List[Path],
+    source_hocr: Optional[Path],
+    output_path: Path,
 ):
     """
-    Generate a Markdown document from merged HOCR file.
+    Merge multiple proofread HOCR files into one multipage HOCR file.
 
     Args:
-        merged_hocr_path: Path to merged HOCR file
-        output_path: Path where Markdown file should be saved
-        preserve_formatting: Whether to preserve font formatting (bold, italic, etc.)
+        all_pages: List of dicts with page metadata including 'element' (BeautifulSoup element)
+        proofread_files: List of proofread HOCR file paths (in order)
+        source_hocr: Optional path to the original source HOCR file (for head content)
+        output_path: Path where merged HOCR should be saved
     """
-    with open(merged_hocr_path, "r", encoding="utf-8") as f:
-        soup = BeautifulSoup(f.read(), "html.parser")
 
-    markdown_lines = []
+    logging.debug(f"Merging {len(proofread_files)} files into: {output_path}")
 
-    # Process each page
-    pages = soup.find_all("div", class_="ocr_page")
+    # Get head content from the source file or the first proofread file
+    head_content = None
 
-    for page_idx, page in enumerate(pages):
-        if page_idx > 0:
-            markdown_lines.append("")  # Blank line between pages
+    # NB: reading x lines is probably safer and less likely to be exceed than using file size
+    # TODO still make not fail tho!
+    # bytes_to_read = (
+    #     750 * 1024
+    # )  # e.g. one ScribeOCR.com output has 219kb of fonts etc in header
+    lines_to_read = 25  # e.g. one ScribeOCR.com output has 15 lines in header
+    if source_hocr and source_hocr.exists():
+        logging.debug(f"Getting head content from source HOCR: {source_hocr}")
+        # very slow bc reading whole file
+        # with open(source_hocr, "r", encoding="utf-8") as f:
+        #     head_content = extract_head(f.read())
+        # with open(source_hocr, "r", encoding="utf-8") as f:
+        #     head_content = extract_head(f.read(bytes_to_read))
+        with open(source_hocr, "r", encoding="utf-8") as f:
+            head_content = extract_head(
+                "".join([next(f) for _ in range(lines_to_read)])
+            )
 
-        # Extract page information
-        page_title = page.get("title", "")
-        page_bbox = extract_bbox(page_title)
+    if head_content is None and proofread_files:
+        logging.debug(
+            f"Getting head content from first proofread file: {proofread_files[0]}"
+        )
+        with open(proofread_files[0], "r", encoding="utf-8") as f:
+            head_content = extract_head(f.read())
 
-        # Look for page number
-        page_num = None
-        page_match = re.search(r"ppageno\s+(\d+)", page_title)
-        if page_match:
-            page_num = page_match.group(1)
+    # Create new HOCR document
+    # soup = BeautifulSoup(
+    #     "<!DOCTYPE html><html><head></head><body></body></html>", "html.parser"
+    # )
 
-        # Look for image filename in HTML comments
-        image_filename = None
-        for comment in page.find_all(
-            string=lambda text: isinstance(text, str) and "overall page" in text.lower()
-        ):
-            # Extract filename from comment like "<!-- overall page#1 image: 0123.jpg -->"
-            filename_match = re.search(r"image[:\s]+([^\s]+)", str(comment))
-            if filename_match:
-                image_filename = filename_match.group(1)
-                break
+    hocr_output = BeautifulSoup(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"\n    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">\n<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">\n<head>\n  <title></title>\n</head>\n<body></body>\n</html>',
+        "html.parser",
+    )
 
-        # Create page header
-        page_header = f"### Page {page_num}" if page_num else "### Page"
-        if image_filename:
-            page_header += f" ({image_filename})"
-        markdown_lines.append(page_header)
-        markdown_lines.append("")
+    # Add head content
+    if head_content:
+        logging.debug("Adding head content to merged HOCR")
+        hocr_output.head.replace_with(head_content)
+    else:
+        # Add basic meta tags
+        logging.debug("No head content found in source HOCR, adding basic meta tags")
+        meta_charset = hocr_output.new_tag("meta", charset="utf-8")
+        meta_generator = hocr_output.new_tag("meta", content="postproofread.py")
+        meta_generator["name"] = "ocr-system"
+        hocr_output.head.append(meta_charset)
+        hocr_output.head.append(meta_generator)
 
-        # Get all lines with bboxes for mode calculation
-        all_lines = page.find_all("span", class_="ocr_line")
-        lines_with_bbox = []
-        for line in all_lines:
-            line_bbox = extract_bbox(line.get("title", ""))
-            if line_bbox:
-                lines_with_bbox.append((line, line_bbox))
+    # Collect all page elements from proofread files
+    # all_pages = []
 
-        # Calculate mode x-position for indent detection
-        mode_x = calculate_mode_x_position(lines_with_bbox)
-        indent_threshold = 20  # pixels
+    # # Use tqdm over batches when available
+    # iterator = (
+    #     tqdm(proofread_files, desc="Generating merged hOCR file", unit="file")
+    #     if tqdm
+    #     else proofread_files
+    # )
+    #
+    # # for proofread_file in proofread_files:
+    # for proofread_file in iterator:
+    #     logging.debug(f"Reading in: {proofread_file}")
+    #     with open(proofread_file, "r", encoding="utf-8") as f:
+    #         content = f.read()
+    #         pages = extract_page_elements(content)
+    #         all_pages.extend(pages)
+    #
+    # # Close iterator if it is a tqdm instance
+    # try:
+    #     if tqdm and hasattr(iterator, "close"):
+    #         iterator.close()
+    # except Exception:
+    #     pass
 
-        # Track previous lines for chapter detection and paragraph spacing
-        prev_line_bbox = None
-        prev_line_text = ""
-        blank_lines_count = 0
+    # Add all pages to body
+    # for page in all_pages:
+    for idx, page_data in enumerate(all_pages):
+        logging.debug(f"Adding page #{idx}")
+        hocr_output.body.append(page_data["element"])
 
-        for line_idx, (line, line_bbox) in enumerate(lines_with_bbox):
-            line_text = line.get_text(strip=True)
-            if not line_text:
-                blank_lines_count += 1
-                continue
-
-            # Check for centered, all-caps text (potential chapter heading)
-            is_chapter = False
-            if (
-                page_bbox
-                and is_centered_text(line_bbox, page_bbox)
-                and is_all_caps(line_text)
-            ):
-                # Check if there were multiple blank lines before (or it's near start of page)
-                if blank_lines_count > 1 or line_idx < 2:
-                    is_chapter = True
-                    markdown_lines.append(f"## {line_text}")
-                    markdown_lines.append("")
-                    prev_line_bbox = line_bbox
-                    prev_line_text = line_text
-                    blank_lines_count = 0
-                    continue
-
-            # Check for indent (new paragraph)
-            is_indented = abs(line_bbox[0] - mode_x) > indent_threshold
-
-            # Check for large vertical gap (also indicates new paragraph)
-            large_gap = False
-            if prev_line_bbox:
-                prev_height = prev_line_bbox[3] - prev_line_bbox[1]
-                vertical_gap = line_bbox[1] - prev_line_bbox[3]
-                large_gap = vertical_gap > (prev_height * 1.5)
-
-            # Start new paragraph if indented or large gap
-            if (is_indented or large_gap) and prev_line_bbox is not None:
-                markdown_lines.append("")  # Blank line for new paragraph
-
-            # Process words in line
-            line_parts = []
-            words = line.find_all("span", class_="ocrx_word")
-
-            for word in words:
-                word_text = word.get_text(strip=True)
-                if not word_text:
-                    continue
-
-                # Detect font styling
-                is_bold, is_italic, is_superscript = detect_font_style(word)
-
-                formatted_word = format_markdown_text(
-                    word_text, is_bold, is_italic, is_superscript, preserve_formatting
-                )
-                line_parts.append(formatted_word)
-
-            if line_parts:
-                markdown_lines.append(" ".join(line_parts))
-
-            prev_line_bbox = line_bbox
-            prev_line_text = line_text
-            blank_lines_count = 0
-
-    # Write Markdown file
+    # Write merged HOCR
+    logging.debug(f"Writing merged HOCR to: {output_path}")
     with open(output_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(markdown_lines))
+        f.write(hocr_output.prettify())
 
-    logging.info("✓ Generated Markdown document: %s", output_path)
+    logging.info("✓ Merged %d pages into: %s", len(all_pages), output_path)
+
+
+def generate_html_report(diff_lines: List[str], output_path: Path, title: str):
+    """
+    Generate an HTML report from diff text.
+
+    Args:
+        diff_lines: List of diff lines
+        output_path: Path where HTML should be saved
+        title: Title for the HTML report
+    """
+    html_template = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Diff Report: {title}</title>
+    <style>
+        body {{
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }}
+        h1 {{
+            font-family: Arial, sans-serif;
+            color: #333;
+        }}
+        .diff-container {{
+            background-color: white;
+            border: 1px solid #ddd;
+            padding: 10px;
+            overflow-x: auto;
+        }}
+        .diff-line {{
+            white-space: pre;
+            padding: 2px 5px;
+        }}
+        .diff-header {{
+            font-weight: bold;
+            color: #666;
+            background-color: #f0f0f0;
+            margin: 10px 0 5px 0;
+            padding: 5px;
+        }}
+        .diff-added {{
+            background-color: #d4edda;
+            color: #155724;
+        }}
+        .diff-removed {{
+            background-color: #f8d7da;
+            color: #721c24;
+        }}
+        .diff-context {{
+            color: #333;
+        }}
+        .diff-info {{
+            color: #004085;
+            background-color: #cce5ff;
+        }}
+    </style>
+</head>
+<body>
+    <h1>Diff Report: {title}</h1>
+    <div class="diff-container">
+{content}
+    </div>
+</body>
+</html>
+"""
+
+    content_lines = []
+    # Use tqdm when available, otherwise plain iterator
+    iterator = (
+        tqdm(diff_lines, desc="Generating HTML diff", unit="line")
+        if tqdm
+        else diff_lines
+    )
+
+    for line in iterator:
+        line_str = str(line).rstrip() if not isinstance(line, str) else line.rstrip()
+
+        if line_str.startswith("==="):
+            css_class = "diff-header"
+        elif line_str.startswith("+++") or line_str.startswith("---"):
+            css_class = "diff-info"
+        elif line_str.startswith("+"):
+            css_class = "diff-added"
+        elif line_str.startswith("-"):
+            css_class = "diff-removed"
+        elif line_str.startswith("@@"):
+            css_class = "diff-info"
+        else:
+            css_class = "diff-context"
+
+        # Escape HTML
+        esc_line = (
+            line_str.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        )
+
+        content_lines.append(
+            f'        <div class="diff-line {css_class}">{esc_line}</div>'
+        )
+
+    # Close iterator if it is a tqdm instance
+    try:
+        if tqdm and hasattr(iterator, "close"):
+            iterator.close()
+    except Exception:
+        pass
+
+    html = html_template.format(title=title, content="\n".join(content_lines))
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    # (done) HTML report written
 
 
 def process_batches(
@@ -1061,31 +1185,34 @@ def process_batches(
             # extract <body> content and create page metadata, handling if more than one page in hOCR file.
             pages = extract_page_elements("".join(proofread_file_lines))
             for page in pages:
-                page_title = page.get('title', '')
+                page_title = page.get("title", "")
                 page_bbox = extract_bbox(page_title)
 
                 # Extract page number
                 page_num = None
-                page_match = re.search(r'ppageno\s+(\d+)', page_title)
+                page_match = re.search(r"ppageno\s+(\d+)", page_title)
                 if page_match:
                     page_num = page_match.group(1)
 
                 # Extract image filename from HTML comments
                 image_filename = None
-                for comment in page.find_all(string=lambda text: isinstance(text, str) and 'overall page' in text.lower()):
-                    filename_match = re.search(r'image[:\s]+([^\s]+)', str(comment))
+                for comment in page.find_all(
+                    string=lambda text: isinstance(text, str)
+                    and "overall page" in text.lower()
+                ):
+                    filename_match = re.search(r"image[:\s]+([^\s]+)", str(comment))
                     if filename_match:
                         image_filename = filename_match.group(1)
                         break
 
                 page_data = {
-                    'element': page,
-                    'source_file': proofread_hocr,
-                    'batch_dir': batch_dir,
-                    'bbox': page_bbox,
-                    'title': page_title,
-                    'page_num': page_num,
-                    'image_filename': image_filename,
+                    "element": page,
+                    "source_file": proofread_hocr,
+                    "batch_dir": batch_dir,
+                    "bbox": page_bbox,
+                    "title": page_title,
+                    "page_num": page_num,
+                    "image_filename": image_filename,
                 }
                 all_pages.append(page_data)
 
@@ -1128,7 +1255,6 @@ def process_batches(
         #  are called for, then loop through list of pages and slowly build up the tex or markdown or whatever
         #  output file as we go.
 
-
         # Generate LaTeX if requested
         if generate_latex:
             logging.debug("Creating TeX file...")
@@ -1148,122 +1274,6 @@ def process_batches(
             )
     else:
         logging.warning("No proofread HOCR files found to merge")
-
-
-def generate_html_report(diff_lines: List[str], output_path: Path, title: str):
-    """
-    Generate an HTML report from diff text.
-
-    Args:
-        diff_lines: List of diff lines
-        output_path: Path where HTML should be saved
-        title: Title for the HTML report
-    """
-    html_template = """<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>Diff Report: {title}</title>
-    <style>
-        body {{
-            font-family: 'Courier New', monospace;
-            font-size: 12px;
-            margin: 20px;
-            background-color: #f5f5f5;
-        }}
-        h1 {{
-            font-family: Arial, sans-serif;
-            color: #333;
-        }}
-        .diff-container {{
-            background-color: white;
-            border: 1px solid #ddd;
-            padding: 10px;
-            overflow-x: auto;
-        }}
-        .diff-line {{
-            white-space: pre;
-            padding: 2px 5px;
-        }}
-        .diff-header {{
-            font-weight: bold;
-            color: #666;
-            background-color: #f0f0f0;
-            margin: 10px 0 5px 0;
-            padding: 5px;
-        }}
-        .diff-added {{
-            background-color: #d4edda;
-            color: #155724;
-        }}
-        .diff-removed {{
-            background-color: #f8d7da;
-            color: #721c24;
-        }}
-        .diff-context {{
-            color: #333;
-        }}
-        .diff-info {{
-            color: #004085;
-            background-color: #cce5ff;
-        }}
-    </style>
-</head>
-<body>
-    <h1>Diff Report: {title}</h1>
-    <div class="diff-container">
-{content}
-    </div>
-</body>
-</html>
-"""
-
-    content_lines = []
-    # Use tqdm when available, otherwise plain iterator
-    iterator = (
-        tqdm(diff_lines, desc="Generating HTML diff", unit="line")
-        if tqdm
-        else diff_lines
-    )
-
-    for line in iterator:
-        line_str = str(line).rstrip() if not isinstance(line, str) else line.rstrip()
-
-        if line_str.startswith("==="):
-            css_class = "diff-header"
-        elif line_str.startswith("+++") or line_str.startswith("---"):
-            css_class = "diff-info"
-        elif line_str.startswith("+"):
-            css_class = "diff-added"
-        elif line_str.startswith("-"):
-            css_class = "diff-removed"
-        elif line_str.startswith("@@"):
-            css_class = "diff-info"
-        else:
-            css_class = "diff-context"
-
-        # Escape HTML
-        esc_line = (
-            line_str.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        )
-
-        content_lines.append(
-            f'        <div class="diff-line {css_class}">{esc_line}</div>'
-        )
-
-    # Close iterator if it is a tqdm instance
-    try:
-        if tqdm and hasattr(iterator, "close"):
-            iterator.close()
-    except Exception:
-        pass
-
-    html = html_template.format(title=title, content="\n".join(content_lines))
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(html)
-
-    # (done) HTML report written
 
 
 def determine_base_filename(input_dir: Path, source_hocr: Optional[Path]) -> str:
